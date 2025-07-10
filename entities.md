@@ -30,7 +30,7 @@ A entidade `Ordem` representa uma intenção ou um pedido enviado por um cliente
 * **Ser Criada:** A ordem é instanciada a partir de um `NewOrderCommand`. Seu estado inicial é `NEW` e sua quantidade restante é igual à original.
 * **Ser Executada:** Após um cruzamento no `Matching Engine`, a ordem é atualizada. Sua `quantidade restante` diminui, e seu `status` pode mudar para `PARTIALLY_FILLED` ou `FILLED`.
 * **Ser Cancelada:** A partir de um `CancelOrderCommand`, o `status` da ordem é alterado para `CANCELED`, e ela é removida do `Order Book`.
-* **Ser Modificada:** A partir de um `AmendOrderCommand` (futuro), seus atributos como `quantity` ou `price` podem ser alterados.
+* **Ser Modificada:** A partir de um `AmendOrderCommand`, seus atributos como `quantity` ou `price` podem ser alterados.
 
 ---
 
@@ -57,8 +57,6 @@ A entidade `Negócio` representa um fato histórico e imutável. É o registro d
 
 ---
 
----
-
 ## Entidades de Mensageria (Messaging Entities)
 
 Estas entidades são os veículos de comunicação transientes que transportam informações entre os componentes do sistema.
@@ -75,12 +73,21 @@ Comandos representam uma intenção ou um pedido para alterar o estado do sistem
 
 ### Eventos (Events)
 
-Eventos são objetos imutáveis que representam um fato que já ocorreu no `Matching Engine`. Eles fluem para a `Outbound Queue` para serem consumidos pelos sistemas de saída. O tipo do evento interno mapeia diretamente para o `ExecType (Tag 150)` do FIX.
+Eventos são objetos imutáveis que representam um fato que já ocorreu no sistema.
 
-| Evento | Propósito | Atributos Principais | `ExecType` Gerado |
-| :--- | :--- | :--- | :--- |
-| `OrderAccepted` | Notificar que uma ordem foi aceita e está no livro com status `NEW`. | Contém os dados completos da `Ordem` aceita, incluindo o `order_id` do sistema. | `0` (New) |
-| `OrderRejected` | Notificar que uma ordem foi rejeitada na entrada. | Contém os dados da ordem original e um `rejection_reason`. | `8` (Rejected) |
-| `TradeExecuted` | Notificar que um negócio foi executado. | Contém todos os dados de um objeto `Trade`. Este evento causa a mudança de status da(s) ordem(ns) para `PARTIALLY_FILLED` ou `FILLED`. | `F` (Trade) |
-| `OrderCanceled` | Notificar que um pedido de cancelamento foi bem-sucedido. | `order_id`: O ID da ordem que foi efetivamente cancelada. O status da ordem muda para `CANCELED`. | `4` (Canceled) |
-| `OrderAmended` | Notificar que uma ordem foi modificada com sucesso. | `order_id`: O ID da ordem e seus novos atributos. O status da ordem é atualizado. | `5` (Replaced) |
+#### Eventos Transacionais (para a `Execution Queue`)
+
+| Evento | Propósito | `ExecType` Gerado |
+| :--- | :--- | :--- |
+| `OrderAccepted` | Notificar que uma ordem foi aceita e está no livro com status `NEW`. | `0` (New) |
+| `OrderRejected` | Notificar que uma ordem foi rejeitada na entrada. | `8` (Rejected) |
+| `TradeExecuted` | Notificar que um negócio foi executado. Causa a mudança de status da(s) ordem(ns) para `PARTIALLY_FILLED` ou `FILLED`. | `F` (Trade) |
+| `OrderPendingCancel`| Notificar que um pedido de cancelamento foi aceito e está sendo processado. |`6` (Pending Cancel)|
+| `OrderCanceled` | Notificar que um pedido de cancelamento foi bem-sucedido. | `4` (Canceled) |
+| `OrderAmended` | Notificar que uma ordem foi modificada com sucesso. | `5` (Replaced) |
+
+#### Eventos de Dados de Mercado (para o `Market Data Channel`)
+
+| Evento | Propósito | Atributos Principais |
+| :--- | :--- | :--- |
+| `BookSnapshotEvent` | Publicar uma "foto" completa do estado do livro de ofertas em um determinado momento. | `symbol`, uma lista de Bids (`preço`, `quantidade_agregada`), uma lista de Asks (`preço`, `quantidade_agregada`). |
