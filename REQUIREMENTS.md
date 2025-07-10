@@ -1,5 +1,3 @@
-# Order Book with Matching Engine in C++
-
 ## Requisitos Funcionais
 
 ### RF01: Receber e Rejeitar Ordens (Simulando Protocolo FIX)
