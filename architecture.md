@@ -1,17 +1,16 @@
 ## Descrição dos Componentes da Arquitetura
 Esta documentação descreve as responsabilidades e interações de cada componente principal do Simulador de Livro de Ofertas.
 
-![architecture](https://github.com/user-attachments/assets/8ae2028a-331e-4e9e-9700-16ba3eb465e9)
-
 ### 1. Inbound Gateway
 
 * **Responsabilidade Principal:** Servir como a porta de entrada do sistema. É responsável por receber, registrar para segurança e traduzir as requisições dos clientes em comandos internos.
-* **Entradas:** Comandos brutos em formato de texto (simulando o protocolo FIX), como `NEW_ORDER` ou `CANCEL_ORDER`.
+* **Entradas:** Comandos brutos em formato de texto (simulando o protocolo FIX).
 * **Processamento:**
     1.  **Registro (Write-Ahead Log):** Imediatamente escreve uma cópia exata do comando bruto recebido no `Input Log`.
-    2.  **Interpretação:** Analisa o comando para entender a intenção do cliente.
-    3.  **Criação de Comando (Fábrica):** Com base na intenção, instancia o objeto de "Comando" apropriado (ex: `NewOrderCommand` ou `CancelOrderCommand`), preenchendo-o com os dados da requisição.
-* **Saídas:** Um "objeto de comando" que é colocado na `Thread Safe Inbound Queue`.
+    2.  **Interpretação:** Analisa o comando para entender a intenção do cliente (ex: `NEW_ORDER`, `CANCEL_ORDER`).
+    3.  **Validação:** Se a mensagem for inválida (ex: falta um campo obrigatório, formato incorreto), ele gera um `OrderRejectedEvent`.
+    4.  **Criação de Comando (Fábrica):** Se a mensagem for válida, instancia o objeto de "Comando" apropriado (ex: `NewOrderCommand`), preenchendo-o com os dados da requisição.
+* **Saídas:** Um "objeto de comando" para a `Thread Safe Inbound Queue` ou um "objeto de evento" (`OrderRejectedEvent`) para a `Execution Queue` (via `Event Bus`).
 
 ### 2. Input Log
 
@@ -32,11 +31,10 @@ Esta documentação descreve as responsabilidades e interações de cada compone
 * **Responsabilidade Principal:** O cérebro do sistema. Orquestra a execução de todos os comandos, aplica a lógica de negócio e mantém o estado do mercado através do `Order Book`.
 * **Entradas:** Objetos de "Comando" da `Thread Safe Inbound Queue`.
 * **Processamento:**
-    1.  Retira um `Comando` da fila.
-    2.  Delega a execução para o próprio objeto de comando, que invoca a lógica apropriada no motor.
-    3.  Toda a interação com o `Order Book` (consultas, inserções, remoções) é realizada aqui.
-    4.  Ao final de cada operação, gera um ou mais objetos de "Evento" (`OrderAccepted`, `TradeExecuted`, etc.) para descrever o resultado.
-* **Saídas:** Objetos de "Evento" que são colocados na `Thread Safe Outbound Queue`.
+    1.  Retira um `Comando` da fila e o executa.
+    2.  Toda a interação com o `Order Book` (consultas, inserções, remoções) é realizada aqui.
+    3.  A cada mudança de estado ou ação significativa, gera um ou mais objetos de "Evento" (`OrderAccepted`, `TradeExecuted`, `BookUpdateEvent`, etc.) para descrever o resultado.
+* **Saídas:** Objetos de "Evento" que são **publicados** no `Event Bus / Dispatcher`.
 
 ### 5. Order Book
 
@@ -45,23 +43,46 @@ Esta documentação descreve as responsabilidades e interações de cada compone
 * **Processamento:** Organiza as ordens seguindo a regra de prioridade Preço-Tempo.
 * **Saídas:** Respostas às consultas do `Matching Engine`.
 
-### 6. Thread Safe Outbound Queue
+### 6. Event Bus / Dispatcher
 
-* **Responsabilidade Principal:** Desacoplar o `Matching Engine` dos sistemas de saída, criando um "rio de eventos" centralizado que serve como a única fonte da verdade sobre o que aconteceu no sistema.
-* **Entradas:** Objetos de "Evento" (`OrderAccepted`, `TradeExecuted`, etc.) gerados pelo `Matching Engine`.
-* **Processamento:** Armazena os eventos em uma estrutura FIFO protegida por um `mutex`.
-* **Saídas:** Objetos de "Evento" para todos os seus consumidores (`Outbound Gateway` e `Auditor`).
+* **Responsabilidade Principal:** Agir como um roteador de eventos central. Desacopla completamente o `Matching Engine` dos vários canais de saída.
+* **Entradas:** Todos os objetos de "Evento" publicados pelo `Matching Engine`.
+* **Processamento:** Analisa o **tipo** de cada evento recebido e o direciona para a fila correta.
+* **Saídas:**
+    * Eventos transacionais (`OrderAccepted`, `TradeExecuted`, etc.) são enviados para a `Execution Queue`.
+    * Eventos de dados de mercado (`BookUpdateEvent`, etc.) são enviados para a `Market Data Channel`.
 
-### 7. Outbound Gateway
+### 7. Execution Queue (Fila de Execução)
 
-* **Responsabilidade Principal:** Comunicar os resultados do processamento de volta ao cliente final, no formato de protocolo esperado (simulando FIX).
-* **Entradas:** Objetos de "Evento" da `Thread Safe Outbound Queue`.
-* **Processamento:** Filtra os eventos relevantes para o cliente. Converte os dados do objeto de evento interno em uma mensagem de resposta no formato FIX (`ExecutionReport`).
+* **Responsabilidade Principal:** Servir como um buffer seguro para **eventos transacionais críticos** que não podem ser perdidos.
+* **Entradas:** Objetos de "Evento" transacionais, vindos do `Event Bus / Dispatcher`.
+* **Processamento:** Armazena os eventos em uma estrutura FIFO protegida por `mutex`.
+* **Saídas:** Objetos de "Evento" para o `Outbound Gateway` e para o `Auditor`.
+
+### 8. Market Data Channel (Canal de Dados de Mercado)
+
+* **Responsabilidade Principal:** Servir como um canal de distribuição para **dados de mercado**, que são de alto volume e onde apenas o estado mais recente importa.
+* **Entradas:** Objetos de "Evento" de dados de mercado, vindos do `Event Bus / Dispatcher`.
+* **Processamento:** Implementado com o padrão de "Estado Compartilhado + Notificação" (`mutex` + `condition_variable`) para garantir que os consumidores sempre peguem o dado mais recente.
+* **Saídas:** O último `MarketDataSnapshotEvent` para o `Market Data Gateway`.
+
+### 9. Outbound Gateway
+
+* **Responsabilidade Principal:** Comunicar os resultados **transacionais** de volta ao cliente (simulando FIX).
+* **Entradas:** Objetos de "Evento" da `Execution Queue`.
+* **Processamento:** Converte os eventos internos (`TradeExecuted`, etc.) em mensagens `ExecutionReport` no formato FIX.
 * **Saídas:** Mensagens de resposta para o cliente.
 
-### 8. Auditor (Journaler)
+### 10. Auditor (Journaler)
 
-* **Responsabilidade Principal:** Criar um registro de auditoria completo, persistente e legível por humanos de todos os eventos significativos que ocorreram no sistema.
-* **Entradas:** Objetos de "Evento" da `Thread Safe Outbound Queue`.
-* **Processamento:** Consome todos os eventos da fila e os formata em uma representação de texto padronizada.
-* **Saídas:** Um arquivo de texto (`SystemJournal.txt`) persistido em disco.
+* **Responsabilidade Principal:** Criar um registro de auditoria completo dos eventos **transacionais**.
+* **Entradas:** Objetos de "Evento" da `Execution Queue`.
+* **Processamento:** Formata cada evento em uma linha de texto padronizada e a persiste em disco.
+* **Saídas:** Um arquivo de texto (`SystemJournal.txt`).
+
+### 11. Market Data Gateway
+
+* **Responsabilidade Principal:** Distribuir os dados de mercado em tempo real para todos os clientes interessados.
+* **Entradas:** O último `MarketDataSnapshotEvent` disponível no `Market Data Channel`.
+* **Processamento:** Formata os dados do snapshot em um formato apropriado para broadcast (ex: JSON).
+* **Saídas:** Um fluxo contínuo de dados de mercado para os clientes.
