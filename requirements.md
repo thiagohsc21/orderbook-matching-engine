@@ -4,7 +4,7 @@
 
 O sistema deve ter um ponto de entrada para receber ordens de compra e venda. Ele também deve ser capaz de validar e rejeitar ordens que não atendam aos critérios básicos do negócio.
 
-O **Gateway de Entrada (Input Gateway)** é o componente responsável por esta função. Ele irá ler uma representação simplificada de uma mensagem FIX `NewOrderSingle`.
+O **Gateway de Entrada (Input Gateway)** é o componente responsável por esta função. Ele irá ler uma representação simplificada de uma mensagem FIX (Por exemplo `NewOrderSingle`, que seria equivalente a 35=D).
 
 * **Validação:** Ao receber uma ordem, o Gateway deve realizar verificações imediatas:
     * O símbolo do ativo é válido/conhecido?
@@ -46,13 +46,14 @@ Após qualquer ação significativa em uma ordem, o sistema deve gerar e dispara
 
 * O **Motor de Matching** é o responsável por gerar esses eventos após processar uma ordem.
 * Os eventos são colocados na **Fila de Saída (Outbound Queue)** para serem consumidos pelo **Publicador de Eventos**.
-* **Tipos de Evento:**
+* **Alguns exemplos de eventos (mais detalhes no `entities.md`):**
     * `Accepted`: A ordem foi aceita, mas ainda não executada (está passiva no livro).
     * `Canceled`: Uma ordem que estava no livro foi cancelada com sucesso.
     * `Partially Filled`: Um negócio ocorreu, mas a ordem foi apenas parcialmente executada. O evento deve informar a quantidade executada e a quantidade que ainda resta.
     * `Filled`: A ordem foi completamente executada por um ou mais negócios.
+    * `Trade`: Um match entre duas ordens aconteceu e um trade foi executado.
 
-### RF05: Armazenar um Journal (Log) de Todos os Eventos
+### RF05: Armazenar um Journal (Log) de Todos os Eventos de Saída
 
 O sistema deve manter um registro cronológico, sequencial e imutável de todos os eventos significativos que processa. Este journal é a fonte da verdade e é crucial para auditoria e recuperação.
 
@@ -63,19 +64,31 @@ O sistema deve manter um registro cronológico, sequencial e imutável de todos 
     2025-07-09T19:18:46.123Z NEW_ORDER OrderID=123 Symbol=PETR4 Side=Buy Qty=100 Price=30.00
     2025-07-09T19:18:46.456Z TRADE TradeID=1 Price=29.98 Qty=50 AggressorID=123 PassiveID=120
     ```
-* Este log é a prova de que tudo aconteceu e na ordem correta. Em um sistema real, ele seria usado para reconstruir o estado do `Order Book` em caso de falha.
+* Este log é a prova de que tudo aconteceu e na ordem correta.
 
-### RF06: Permitir o Cancelamento de Ordens
+### RF06: Armazenar um Journal (Log) de Todos os Eventos de Entrada
 
-Um cliente deve ser capaz de solicitar o cancelamento de uma ordem que ele enviou anteriormente e que ainda não foi totalmente executada.
+O sistema deve manter um registro cronológico, sequencial e imutável de todos os eventos (FIX) significativos que processa (Write Ahead Logging). Este log é a fonte da verdade e é crucial para auditoria e recuperação.
 
-* O **Gateway de Entrada** recebe uma solicitação de cancelamento (simulando uma mensagem FIX `OrderCancelRequest`), que contém o `OrderID` da ordem a ser cancelada.
+* Um componente dedicado de `Journaling` será responsável por esta tarefa.
+* Toda vez que um FIX é recebido no **Inbound Gateway**, ele deve ser escrito **primeiro** num arquivo de log e só depois o respectivo comando deve ser enviado para a **Inbound Queue**.
+* Este log é a prova de que tudo aconteceu e na ordem correta. Em um sistema real, ele seria usado para reconstruir o estado do `Order Book` em caso de falha ou para permitir `Replays` caso necessário (release, investigação de bug, etc.).
+
+### RF07: Permitir o Cancelamento de Ordens e Alteração de Ordens
+
+Um cliente deve ser capaz de solicitar o cancelamento/alteração de uma ordem que ele enviou anteriormente e que ainda não foi totalmente executada.
+
+* O **Gateway de Entrada** recebe uma solicitação (simulando uma mensagem FIX `OrderCancelRequest` 35=F ou `OrderAmendRequest` 35=G), que contém o `OrderID` da ordem a ser impactada.
 * Essa solicitação é colocada na **Fila de Entrada**.
 * O **Motor de Matching** processa a solicitação: ele busca a ordem pelo `OrderID` no seu respectivo `OrderBook`.
-* Se a ordem for encontrada, ela é removida do livro. O motor então gera um evento `Canceled` e o coloca na **Fila de Saída**.
-* Se a ordem não for encontrada (porque já foi totalmente executada ou o ID está errado), o motor pode gerar um evento de `Cancel Rejected`.
+* Se um cancelamento foi solicitado:
+   * Se a ordem for encontrada, ela é removida do livro. O motor então gera um evento `Cancel Accept` e o coloca na **Fila de Saída**.
+   * Se a ordem não for encontrada (porque já foi totalmente executada ou o ID está errado), o motor pode gerar um evento de `Cancel Rejected`.
+* Se uma alteração foi solicitada:
+   * Se a ordem for encontrada, ela é removida do livro. O motor então modifica seus parâmetros, volta ela pro book (alterando sua prioridade), emite um evento de `Ammend Accept` e o coloca na **Fila de Saída**.
+   * Se a ordem não for encontrada (porque já foi totalmente executada ou o ID está errado), o motor pode gerar um evento de `Ammend Rejected`.
 
-### RF07: Publicação de Dados de Mercado (Market Data)
+### RF08: Publicação de Dados de Mercado (Market Data)
 
 O sistema deve ser capaz de fornecer e publicar informações sobre o estado do livro de ofertas para os clientes. Isso inclui, no mínimo, o "Top of Book" (melhor preço de compra e venda) e, idealmente, a profundidade do mercado.
 
@@ -83,7 +96,7 @@ O sistema deve ser capaz de fornecer e publicar informações sobre o estado do 
 * **Profundidade do Mercado (Market Depth):** Uma visão agregada do livro, mostrando a quantidade total de ações disponíveis em cada nível de preço. Ex: `PETR4 Bids: 1000 @ 30.00, 5000 @ 29.99, ...`
 * **Impacto na Arquitetura:** O `Matching Engine`, após qualquer mudança no `OrderBook` (nova ordem, cancelamento, trade), geraria um snapshot do estado do mercado (ToB ou Depth). Esse snapshot seria um novo tipo de evento, colocado na **Fila de Saída** para ser distribuído pelo **Publicador de Eventos**, assim como os relatórios de execução.
 
-### RF08: Suporte para Ordens a Mercado (Market Order)
+### RF09: Suporte para Ordens a Mercado (Market Order)
 
 O sistema deve aceitar "Ordens a Mercado", que são ordens de compra ou venda para serem executadas imediatamente ao melhor preço disponível no mercado. O cliente não especifica um preço, apenas a quantidade.
 
