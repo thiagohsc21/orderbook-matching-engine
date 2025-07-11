@@ -1,5 +1,6 @@
 ## Descrição dos Componentes da Arquitetura
 Esta documentação descreve as responsabilidades e interações de cada componente principal do Simulador de Livro de Ofertas.
+<img width="1140" height="365" alt="image" src="https://github.com/user-attachments/assets/ba4fd6fd-fd4c-4216-9610-9b1a18c697b1" />
 
 ### 1. Inbound Gateway
 
