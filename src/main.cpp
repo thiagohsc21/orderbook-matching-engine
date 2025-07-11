@@ -1,15 +1,36 @@
 #include <iostream>
+#include <thread>
 #include <chrono>
+#include <memory>
+#include "utils/thread_safe_queue.hpp" 
+#include "messaging/inbound_gateway.hpp"
 #include <iomanip>
-
 #include "domain/order.hpp"
 #include <vector>
 #include <random>
 
-int main() 
-{
+void producer(ThreadSafeQueue<std::unique_ptr<int>>& queue) {
+    for (int i = 1; i <= 5; ++i) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(50));
+        std::unique_ptr item = std::make_unique<int>(i);
+        queue.push(std::move(item));
+        std::cout << "[Producer] Inseriu " << i << std::endl;
+    }
+}
 
-	std::vector<Order> orders;
+void consumer(ThreadSafeQueue<std::unique_ptr<int>>& queue) {
+    for (int i = 0; i < 5; ++i) {
+        std::unique_ptr<int> item;
+        while (!queue.try_pop(item)) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(100));
+        }
+        std::cout << "[Consumer] Pegou " << *item << std::endl;
+    }
+}
+
+int main() {
+
+    std::vector<Order> orders;
 	std::random_device rd;
 	std::mt19937 gen(rd());
 	std::uniform_int_distribution<uint64_t> client_id_dist(10000, 99999);
@@ -23,7 +44,7 @@ int main()
 	std::uniform_real_distribution<double> price_dist(100.0, 200.0);
 	std::uniform_int_distribution<uint32_t> quantity_dist(10, 1000);
 
-	for (int i = 0; i < 20; ++i) {
+	for (int i = 0; i < 10; ++i) {
 		uint64_t client_id = client_id_dist(gen);
 		uint64_t client_order_id = client_order_id_dist(gen);
 		std::string symbol = symbols[symbol_dist(gen)];
@@ -57,6 +78,23 @@ int main()
 				  << "." << std::setfill('0') << std::setw(9) << ns.count()
 				  << "\n\n";
 	}
-	
+
+    // Thread Safe Queue test
+    ThreadSafeQueue<std::unique_ptr<int>> queue;
+
+    std::thread t1(producer, std::ref(queue));
+    std::thread t2(consumer, std::ref(queue));
+
+    t1.join();
+    t2.join();
+
+    // Inbound Gateway test
+    std::string wal_file_path = "write_ahead_log.txt";
+    ThreadSafeQueue<std::unique_ptr<Command>> command_queue;
+    InboundGateway inbound_gateway(command_queue, wal_file_path);
+    inbound_gateway.writeAheadLog("Test log message");
+    inbound_gateway.parseAndCreateCommand("tag1=value1|tag2=value2|tag3=value3|tag4=value4");
+
+
     return 0;
 }
